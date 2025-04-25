@@ -10,9 +10,11 @@ from webdriver_manager.chrome import ChromeDriverManager
 import signal
 import sys
 
-# USERNAMES = ["TABASCOweb3", "vaibhavchellani", "intern", "0xMert_", "cryptolyxe", "blknoiz06", "MustStopMurad", "gianinaskarlett", "frankdegods", "notthreadguy", "_TJRTrades", "0xNairolf", "rajgokal", "lukebelmar", "muststopnigg", "VitalikButerin", "TimBeiko", "gavofyork", "cz_binance"]
+# USERNAMES = ["TABASCOweb3", "vaibhavchellani", "intern", "0xMert_", "cryptolyxe", "blknoiz06", "MustStopMurad", "gianinaskarlett", "frankdegods", "notthreadguy", "_TJRTrades", "0xNairolf", "rajgokal", "lukebelmar", "muststopnigg", "VitalikButerin", "TimBeiko", "gavofyork", "cz_binance", "TheCryptoLark", "JupiterExchange", "weremeow", "SOCKETProtocol", "litocoen", "3orovik", "aeyakovenko", "lrettig", "musalbas", "jon_charb", "avsa", "adamscochran", "koeppelmann", "0xCygaar", "cryptunez", "BullyEsq", "solana", "phantom", "ethereum"]
 
-USERNAME = "cz_binance"
+# Search Queries = ["chain%20abstraction", "interop", "rollup", "solana", "trenches", "multi-chain", "dApp", "onchain", "web3", "defi", "nft", "gamefi", "socialfi", "dao", "wallet", "staking", "bridging", "L2"]
+
+USERNAME = "L2"
 MAX_TWEETS = 1000
 tweet_data = []  # Global list to store tweets for interrupt handler
 
@@ -104,7 +106,7 @@ def scroll_and_collect(driver, username, max_tweets):
     retry_stages = [5, 10, 10]
 
     def load_profile():
-        driver.get(f"https://twitter.com/{username}")
+        driver.get(f"https://x.com/search?q={username}&src=typed_query")
         time.sleep(10)
 
     load_profile()
@@ -129,7 +131,7 @@ def scroll_and_collect(driver, username, max_tweets):
                 if tweet_id not in tweet_ids and content:
                     replies, retweets, likes = extract_engagement(tweet)
                     tweet_data.append({
-                        "username": username,
+                        "username": "search query ethereum",
                         "content": content,
                         "likes": likes,
                         "retweets": retweets,
@@ -170,8 +172,8 @@ def scroll_and_collect(driver, username, max_tweets):
 def handle_exit(signal_received, frame):
     print("\n🔌 Ctrl+C detected. Saving collected tweets before exit...")
     df = pd.DataFrame(tweet_data)
-    df.to_csv(f"tweets_{USERNAME}.csv", index=False)
-    print(f"💾 Saved {len(df)} tweets to 'tweets_{USERNAME}.csv'")
+    df.to_csv(f"tweets_search_query_{USERNAME}.csv", index=False)
+    print(f"💾 Saved {len(df)} tweets to 'tweets_search_query_{USERNAME}.csv'")
     sys.exit(0)
 
 def main():
@@ -190,8 +192,8 @@ def main():
     scroll_and_collect(driver, USERNAME, MAX_TWEETS)
 
     df = pd.DataFrame(tweet_data)
-    df.to_csv(f"tweets_{USERNAME}.csv", index=False)
-    print(f"\n✅ Done. Saved {len(df)} tweets to 'tweets_{USERNAME}.csv'")
+    df.to_csv(f"tweets_search_query_{USERNAME}.csv", index=False)
+    print(f"\n✅ Done. Saved {len(df)} tweets to 'tweets_search_query_{USERNAME}.csv'")
     driver.quit()
 
 if __name__ == "__main__":
