@@ -19,9 +19,6 @@ print(f"Number of duplicate tweets found: {initial_duplicates}")
 df = df.drop_duplicates(subset=["content"])
 print(f"Number of tweets after removing duplicates: {len(df)}")
 
-# Remove tweets with all engagement metrics as 0
-df = df[(df["likes"] > 0) | (df["retweets"] > 0) | (df["replies"] > 0)]
-
 # Apply log1p transform (log(x + 1)) for better regression modeling
 df["likes_log"] = np.log1p(df["likes"])
 df["retweets_log"] = np.log1p(df["retweets"])
