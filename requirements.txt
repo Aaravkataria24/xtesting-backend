@@ -61,10 +61,10 @@ soupsieve==2.6
 starlette==0.46.1
 sympy==1.13.1
 threadpoolctl==3.6.0
-tokenizers==0.21.1
-torch>=2.0.0
+tokenizers>=0.11.1,<0.14
+torch==2.0.1
 tqdm>=4.65.0
-transformers>=4.30.0
+transformers==4.30.2
 trio==0.29.0
 trio-websocket==0.12.2
 typing-inspection==0.4.0

@@ -1,3 +1,8 @@
+# add automation so that if it begins overfitting (val loss starts increasing), it stops and saves the best model
+# if it already saves best model only, then no need of above step
+
+# make sure there are checkpoints after each epoch
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
@@ -12,6 +17,53 @@ import gc
 import json
 from datetime import datetime
 import torch.nn.functional as F
+import signal
+import sys
+
+# Global variable to track if training should stop
+should_stop_training = False
+
+def signal_handler(signum, frame):
+    global should_stop_training
+    print("\n⚠️ Training interruption requested. Saving best model and stopping...")
+    should_stop_training = True
+
+# Register the signal handler
+signal.signal(signal.SIGINT, signal_handler)
+
+# Set up paths in Google Drive
+DRIVE_PATH = "/content/drive/MyDrive/tweetlab_model"
+CHECKPOINT_PATH = os.path.join(DRIVE_PATH, "checkpoints")
+LOG_PATH = os.path.join(DRIVE_PATH, "logs")
+
+# Create directories at the start
+os.makedirs(CHECKPOINT_PATH, exist_ok=True)
+os.makedirs(LOG_PATH, exist_ok=True)
+
+print(f"Working directory: {os.getcwd()}")
+print(f"Checkpoint path: {CHECKPOINT_PATH}")
+print(f"Log path: {LOG_PATH}")
+
+def save_checkpoint(state_dict, filename, is_best=False):
+    """Helper function to save checkpoints with error handling"""
+    try:
+        filepath = os.path.join(CHECKPOINT_PATH, filename)
+        torch.save(state_dict, filepath)
+        print(f"✅ Successfully saved {'best model' if is_best else 'checkpoint'} to {filepath}")
+        return True
+    except Exception as e:
+        print(f"❌ Error saving {'best model' if is_best else 'checkpoint'} to {filename}: {str(e)}")
+        return False
+
+def cleanup_old_checkpoints():
+    """Remove all checkpoints except best_model.pt"""
+    try:
+        for file in os.listdir(CHECKPOINT_PATH):
+            if file != "best_model.pt":
+                os.remove(os.path.join(CHECKPOINT_PATH, file))
+        print("✅ Cleaned up old checkpoints")
+    except Exception as e:
+        print(f"❌ Error cleaning up checkpoints: {str(e)}")
 
 # Load and preprocess data
 df = pd.read_csv("processed_tweets_multi.csv")
@@ -32,6 +84,7 @@ with open('normalization_params.json', 'w') as f:
     json.dump(normalization_params, f)
 
 # Model configuration
+# can change batch_size so that training is faster (note, will consume more memory)
 MODEL_NAME = "cardiffnlp/twitter-roberta-base"
 MAX_LENGTH = 256
 BATCH_SIZE = 16
@@ -145,18 +198,24 @@ def train_model():
     best_val_loss = float('inf')
     patience_counter = 0
     
-    # Create directories
-    os.makedirs("checkpoints", exist_ok=True)
-    os.makedirs("logs", exist_ok=True)
-
+    # Clean up any existing checkpoints at the start
+    cleanup_old_checkpoints()
+    
     # Training loop
     try:
         for epoch in range(EPOCHS):
+            if should_stop_training:
+                print("🛑 Training stopped by user request")
+                break
+
             model.train()
             total_train_loss = 0
             
             # Training phase
             for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Train]")):
+                if should_stop_training:
+                    break
+
                 optimizer.zero_grad()
                 
                 input_ids = batch["input_ids"].to(device)
@@ -172,16 +231,6 @@ def train_model():
                 scheduler.step()
                 
                 total_train_loss += loss.item()
-                
-                # Save checkpoint every 100 batches
-                if batch_idx % 100 == 0:
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'scheduler_state_dict': scheduler.state_dict(),
-                        'loss': loss.item(),
-                    }, "checkpoints/latest_checkpoint.pt")
                 
                 # Clear memory
                 del outputs, loss
@@ -237,27 +286,43 @@ def train_model():
                 'timestamp': datetime.now().isoformat()
             }
             
-            with open("logs/training_log.json", "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
+            try:
+                with open(os.path.join(LOG_PATH, "training_log.json"), "a") as f:
+                    f.write(json.dumps(log_entry) + "\n")
+                print("✅ Successfully logged metrics")
+            except Exception as e:
+                print(f"❌ Error logging metrics: {str(e)}")
             
             print(f"Epoch {epoch+1}/{EPOCHS}")
             print(f"Train Loss: {avg_train_loss:.4f}")
             print(f"Val Loss: {avg_val_loss:.4f}")
             print(f"Within 5% error: {within_5_percent:.2f}%")
             
+            # Clean up old checkpoints before saving new ones
+            cleanup_old_checkpoints()
+            
+            # Save checkpoint after each epoch
+            save_checkpoint({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'loss': avg_val_loss,
+                'within_5_percent': within_5_percent
+            }, f"epoch_{epoch+1}_checkpoint.pt")
+            
             # Model checkpointing
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 patience_counter = 0
-                torch.save({
+                save_checkpoint({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'scheduler_state_dict': scheduler.state_dict(),
                     'loss': avg_val_loss,
                     'within_5_percent': within_5_percent
-                }, "checkpoints/best_model.pt")
-                print("✅ Saved new best model!")
+                }, "best_model.pt", is_best=True)
             else:
                 patience_counter += 1
                 print(f"⚠️ No improvement for {patience_counter} epochs")
@@ -274,9 +339,16 @@ def train_model():
         raise e
 
     # Save final model
-    model.load_state_dict(torch.load("checkpoints/best_model.pt")['model_state_dict'])
-    torch.save(model.state_dict(), "finetuned_twitter_roberta_multi.pt")
-    print("✅ Training complete!")
+    try:
+        best_model_path = os.path.join(CHECKPOINT_PATH, "best_model.pt")
+        if os.path.exists(best_model_path):
+            model.load_state_dict(torch.load(best_model_path)['model_state_dict'])
+            torch.save(model.state_dict(), os.path.join(DRIVE_PATH, "finetuned_twitter_roberta_multi.pt"))
+            print("✅ Training complete and final model saved!")
+        else:
+            print("❌ Could not find best model to save final version")
+    except Exception as e:
+        print(f"❌ Error saving final model: {str(e)}")
 
 if __name__ == "__main__":
     train_model()
