@@ -22,7 +22,7 @@ class EnhancedRobertaRegressor(nn.Module):
         # Feature processing if we have additional features
         if num_features > 0:
             self.feature_encoder = nn.Sequential(
-                nn.Linear(11, 64),  # Changed from num_features to 11
+                nn.Linear(num_features, 64),
                 nn.LayerNorm(64),
                 nn.GELU(),
                 nn.Dropout(dropout_rate),
@@ -75,86 +75,54 @@ class EnhancedRobertaRegressor(nn.Module):
         return x
 
 class TweetPredictor:
-    def __init__(self, model_path, normalization_params_path, device=None):
+    def __init__(self, model_path=None, normalization_params_path=None, device=None):
+        if model_path is None:
+            model_path = "finetuned_twitter_roberta_multi.pt"
+        if normalization_params_path is None:
+            normalization_params_path = "normalization_params.json"
         # Load normalization parameters
         with open(normalization_params_path, 'r') as f:
             self.norm_params = json.load(f)
-            
         print(f"Loaded normalization parameters: {self.norm_params.keys()}")
-        
-        # Determine if we have features
-        self.has_features = 'feature_columns' in self.norm_params
-        # Update number of features to 11 (excluding view_count_log)
-        self.num_features = 11 if self.has_features else 0
-        
-        # List feature columns for reference
-        if self.has_features:
-            print(f"Feature columns (excluding view_count_log): {[col for col in self.norm_params['feature_columns'] if col != 'view_count_log']}")
-        
-        # Set device
+        # Set feature columns to the new 9-feature list
+        self.feature_columns = [
+            'follower_count_log', 'length_log', 'has_image', 'has_video',
+            'has_link', 'has_mention', 'has_crypto_mention', 'hour', 'minute'
+        ]
+        self.has_features = True
+        self.num_features = 9
+        print(f"Feature columns: {self.feature_columns}")
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
-        
-        # Initialize tokenizer and model
         self.tokenizer = AutoTokenizer.from_pretrained("cardiffnlp/twitter-roberta-base")
-        self.model = EnhancedRobertaRegressor(num_features=11).to(self.device)  # Always use 11 features
-        
-        # Load model weights
-        checkpoint = torch.load(model_path, map_location=self.device)
-        if 'model_state_dict' in checkpoint:
-            # If the model was saved with the full training state
-            state_dict = checkpoint['model_state_dict']
-            # Remove position_ids if present in state_dict but not in model
-            if 'roberta.embeddings.position_ids' in state_dict and not hasattr(self.model.roberta.embeddings, 'position_ids'):
-                del state_dict['roberta.embeddings.position_ids']
-            self.model.load_state_dict(state_dict, strict=False)
-        else:
-            # If the model was saved with just the state dict
-            if 'roberta.embeddings.position_ids' in checkpoint and not hasattr(self.model.roberta.embeddings, 'position_ids'):
-                del checkpoint['roberta.embeddings.position_ids']
-            self.model.load_state_dict(checkpoint, strict=False)
+        self.model = EnhancedRobertaRegressor(num_features=self.num_features).to(self.device)
+        # Load model weights (weights-only file)
+        state_dict = torch.load(model_path, map_location=self.device)
+        self.model.load_state_dict(state_dict, strict=False)
         self.model.eval()
-        
         print("Model loaded successfully!")
         
     def normalize_features(self, features_df):
-        """Normalize feature values using saved normalization parameters"""
-        if not self.has_features:
-            return None
-            
-        # Filter out view_count_log from feature columns if it exists
-        feature_columns = [col for col in self.norm_params['feature_columns'] if col != 'view_count_log']
-        feature_means = [mean for i, mean in enumerate(self.norm_params['feature_means']) 
-                        if self.norm_params['feature_columns'][i] != 'view_count_log']
-        feature_stds = [std for i, std in enumerate(self.norm_params['feature_stds']) 
-                       if self.norm_params['feature_columns'][i] != 'view_count_log']
-        
-        # Fix potential issues with zero standard deviation
+        feature_means = [self.norm_params['feature_means'][self.norm_params['feature_columns'].index(col)] for col in self.feature_columns]
+        feature_stds = [self.norm_params['feature_stds'][self.norm_params['feature_columns'].index(col)] for col in self.feature_columns]
         feature_stds = [std if std != 0 else 1.0 for std in feature_stds]
-        
         # Handle time_posted if present - convert to hour and minute
         if 'time_posted' in features_df.columns and 'hour' not in features_df.columns:
-            # Extract hour and minute from time_posted
             try:
                 features_df['hour'], features_df['minute'] = zip(*features_df['time_posted'].apply(self._extract_time))
                 print(f"Converted time_posted to hour and minute features.")
             except Exception as e:
                 print(f"Error converting time_posted: {e}. Using default values.")
-                features_df['hour'] = 12  # Default to noon
+                features_df['hour'] = 12
                 features_df['minute'] = 0
-        
-        # Extract and normalize only the features we need
         features = []
-        for i, col in enumerate(feature_columns):
+        for i, col in enumerate(self.feature_columns):
             if col in features_df.columns:
-                # Normalize the feature
                 normalized_feature = (features_df[col].values - feature_means[i]) / feature_stds[i]
                 features.append(normalized_feature)
             else:
-                # If feature is missing, use zeros
                 print(f"Warning: Feature '{col}' not found in input data. Using zeros.")
                 features.append(np.zeros(len(features_df)))
-                
         return np.column_stack(features)
     
     def _extract_time(self, time_str):
