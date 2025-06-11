@@ -156,6 +156,11 @@ class TweetPredictor:
     def _extract_time(self, time_str):
         """Extract hour and minute from time string in various formats"""
         try:
+            # Try parsing ISO 8601 format (e.g., "2025-06-11T06:44:56.016Z")
+            if 'T' in str(time_str):
+                dt = datetime.fromisoformat(str(time_str).replace('Z', '+00:00'))
+                return dt.hour, dt.minute
+            
             # Try direct parsing of HH:MM:SS or HH:MM format
             parts = str(time_str).split(':')
             if len(parts) >= 2:
@@ -164,9 +169,9 @@ class TweetPredictor:
             # Try parsing as datetime if it's a different format
             dt = datetime.strptime(str(time_str), "%H:%M:%S")
             return dt.hour, dt.minute
-        except Exception:
+        except Exception as e:
             # Return default values if parsing fails
-            print(f"Could not parse time: {time_str}. Using default values.")
+            print(f"Could not parse time: {time_str}. Using default values. Error: {str(e)}")
             return 12, 0  # Default to noon
     
     def denormalize_predictions(self, predictions):
