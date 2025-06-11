@@ -9,13 +9,15 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 import signal
 import sys
+from selenium.common.exceptions import StaleElementReferenceException
 
-# USERNAMES = ["TABASCOweb3", "vaibhavchellani", "intern", "0xMert_", "cryptolyxe", "blknoiz06", "MustStopMurad", "gianinaskarlett", "frankdegods", "notthreadguy", "_TJRTrades", "0xNairolf", "rajgokal", "lukebelmar", "muststopnigg", "VitalikButerin", "TimBeiko", "gavofyork", "cz_binance", "TheCryptoLark", "JupiterExchange", "weremeow", "SOCKETProtocol", "litocoen", "3orovik", "aeyakovenko", "lrettig", "musalbas", "jon_charb", "avsa", "adamscochran", "koeppelmann", "0xCygaar", "cryptunez", "BullyEsq", "solana", "phantom", "ethereum"]
+# USERNAMES = ["UseUniversalX", "TABASCOweb3", "vaibhavchellani", "intern", "0xMert_", "cryptolyxe", "blknoiz06", "MustStopMurad", "gianinaskarlett", "frankdegods", "notthreadguy", "_TJRTrades", "0xNairolf", "rajgokal", "lukebelmar", "muststopNlG", "VitalikButerin", "TimBeiko", "mauritsneo", "aashatwt", "param_eth", "yashvikram30", "okaykito", "_soulninja", "theunipcs", "cz_binance", "TheCryptoLark", "JupiterExchange", "weremeow", "SOCKETProtocol", "litocoen", "3orovik", "aeyakovenko", "lrettig", "musalbas", "jon_charb", "avsa", "adamscochran", "koeppelmann", "0xCygaar", "cryptunez", "BullyEsq", "solana", "phantom", "ethereum", "SuhailKakar", "IshitaaPandey", "ri5hitripathi"]
 
 # Search Queries = ["chain%20abstraction", "interop", "rollup", "solana", "trenches", "multi-chain", "dApp", "onchain", "web3", "defi", "nft", "gamefi", "socialfi", "dao", "wallet", "staking", "bridging", "L2"]
 
-USERNAME = "L2"
-MAX_TWEETS = 1000
+USERNAME = "davidonchainx"
+MAX_TWEETS = 10000
+default_follower_count = 9701  # Set this to the user's follower count before running
 tweet_data = []  # Global list to store tweets for interrupt handler
 
 def setup_driver():
@@ -99,17 +101,155 @@ def click_retry(driver, attempts, sleep_time, previous_texts):
             time.sleep(sleep_time + attempt)
     return True
 
+def get_follower_count(driver):
+    try:
+        # Use a robust XPath for follower count
+        elem = driver.find_element(By.XPATH, '//span[contains(@class, "css-1jxf684") and contains(@class, "r-bcqeeo")]')
+        return parse_number(elem.text)
+    except Exception as e:
+        print(f"Could not get follower count: {e}")
+        return 0
+
+def extract_tweet_metadata(tweet):
+    # First check if it's a repost - if so, skip immediately
+    try:
+        if tweet.find_elements(By.XPATH, './/span[contains(text(), "reposted")]'):
+            print("[DEBUG] Skipping repost")
+            return None
+    except:
+        pass
+
+    # Click all 'Show more' buttons inside the tweet before extracting text
+    show_more_clicked = False
+    try:
+        show_more_buttons = tweet.find_elements(By.XPATH, ".//span[contains(text(), 'Show more')]/ancestor::button")
+        for btn in show_more_buttons:
+            try:
+                btn.click()
+                show_more_clicked = True
+                time.sleep(0.2)
+            except:
+                continue
+    except:
+        pass
+
+    try:
+        # Content (try to get early for debug)
+        try:
+            content_elem = tweet.find_element(By.XPATH, './/div[@data-testid="tweetText"]')
+            if show_more_clicked:
+                # If show more was clicked, join text nodes before and after show more
+                # Get all direct children (spans, a, etc.)
+                children = content_elem.find_elements(By.XPATH, './*')
+                lines = []
+                buffer = ''
+                for child in children:
+                    text = child.text
+                    if text.strip():
+                        if buffer:
+                            buffer += text
+                            lines.append(buffer)
+                            buffer = ''
+                        else:
+                            lines.append(text)
+                    else:
+                        # If this is a break (empty), treat as line break
+                        if buffer:
+                            lines.append(buffer)
+                            buffer = ''
+                if buffer:
+                    lines.append(buffer)
+                content = '\n'.join([l.strip() for l in lines if l.strip()])
+            else:
+                content = content_elem.text.strip()
+        except:
+            content_elem = tweet.find_element(By.XPATH, './/div[@lang]')
+            content = content_elem.text.strip()
+    except:
+        content = "<no content>"
+
+    # Check if it's quoting another tweet (robust)
+    is_quoting = 'yes' if tweet.find_elements(By.XPATH, './/div[starts-with(@id, "id__")][.//div[@data-testid="tweetText"]]') else 'no'
+
+    # Poll detection
+    has_poll = 'yes' if tweet.find_elements(By.XPATH, '//*[@id="id__v5v666jccn"]') else 'no'
+
+    print(f"[DEBUG] Processing tweet: {content}")
+    try:
+        # Engagement
+        replies, retweets, likes = extract_engagement(tweet)
+        # Date/time
+        try:
+            timestamp_elem = tweet.find_element(By.XPATH, './/time')
+            timestamp = timestamp_elem.get_attribute('datetime')
+            date_posted = timestamp.split('T')[0]
+            time_posted = timestamp.split('T')[1].split('.')[0]
+        except:
+            date_posted = time_posted = None
+        # Media (exclude quoted tweet containers)
+        quoted_divs = tweet.find_elements(By.XPATH, ".//div[starts-with(@id, 'id__')][.//div[@data-testid='tweetText']]")
+        def is_in_quoted(elem):
+            parent = elem
+            while True:
+                try:
+                    parent = parent.find_element(By.XPATH, "..")
+                    if parent in quoted_divs:
+                        return True
+                except:
+                    break
+            return False
+        # Images
+        all_imgs = tweet.find_elements(By.XPATH, './/img[@alt="Image" and contains(@class, "css-9pa8cd")]')
+        main_imgs = [img for img in all_imgs if not is_in_quoted(img)]
+        # Videos
+        all_videos = tweet.find_elements(By.XPATH, './/div[@data-testid="videoPlayer"]//video')
+        main_videos = [vid for vid in all_videos if not is_in_quoted(vid)]
+        has_video = 'yes' if main_videos else 'no'
+        has_image = 'no' if has_video == 'yes' else ('yes' if main_imgs else 'no')
+        # Links/mentions
+        has_link = 'yes' if tweet.find_elements(By.XPATH, './/a[contains(@href, "http")]') else 'no'
+        has_mention = 'yes' if tweet.find_elements(By.XPATH, './/a[starts-with(text(), "@")]') else 'no'
+        has_crypto_mention = 'yes' if tweet.find_elements(By.XPATH, './/a[starts-with(text(), "$")]') else 'no'
+        # View count
+        view_count_elem = tweet.find_elements(By.XPATH, './/a[contains(@aria-label, "views")]//span[contains(@class, "css-1jxf684")]')
+        view_count = parse_number(view_count_elem[0].text) if view_count_elem else 0
+        # Length
+        length = len(content)
+        return {
+            "content": content,
+            "likes": likes,
+            "retweets": retweets,
+            "replies": replies,
+            "date_posted": date_posted,
+            "time_posted": time_posted,
+            "has_image": has_image,
+            "has_video": has_video,
+            "has_link": has_link,
+            "has_mention": has_mention,
+            "has_crypto_mention": has_crypto_mention,
+            "length": length,
+            "view_count": view_count,
+            "is_quoting": is_quoting,
+            "has_poll": has_poll
+        }
+    except Exception as e:
+        print(f"Error extracting tweet metadata: {e}")
+        return None
+
 def scroll_and_collect(driver, username, max_tweets):
     global tweet_data
     tweet_ids = set()
     scroll_pause = 4
     retry_stages = [5, 10, 10]
+    stale_skipped = 0
+    error_skipped = 0
 
     def load_profile():
-        driver.get(f"https://x.com/search?q={username}&src=typed_query")
+        driver.get(f"https://x.com/{username}")
         time.sleep(10)
 
     load_profile()
+    follower_count = default_follower_count  # Use the manually set follower count
     last_height = driver.execute_script("return document.body.scrollHeight")
     previous_texts = set()
 
@@ -118,29 +258,60 @@ def scroll_and_collect(driver, username, max_tweets):
         print(f"🧵 {username}: {len(tweets)} tweets on screen. Total collected: {len(tweet_data)}")
 
         new_texts = set()
-        for tweet in tweets:
+        for tweet_index in range(len(tweets)):
+            retry = False
             try:
+                tweet = tweets[tweet_index]
                 tweet.location_once_scrolled_into_view
-                time.sleep(random.uniform(0.5, 1.0))
-                try:
-                    content_elem = tweet.find_element(By.XPATH, './/div[@data-testid="tweetText"]')
-                except:
-                    content_elem = tweet.find_element(By.XPATH, './/div[@lang]')
-                content = content_elem.text.strip()
+                time.sleep(random.uniform(0.2, 0.5))  # Reduce sleep
+                meta = extract_tweet_metadata(tweet)
+                if meta is None:
+                    continue
+                content = meta["content"]
                 tweet_id = hash(content)
                 if tweet_id not in tweet_ids and content:
-                    replies, retweets, likes = extract_engagement(tweet)
                     tweet_data.append({
-                        "username": "search query ethereum",
-                        "content": content,
-                        "likes": likes,
-                        "retweets": retweets,
-                        "replies": replies
+                        "username": username,
+                        "follower_count": follower_count,
+                        **meta
                     })
                     tweet_ids.add(tweet_id)
                     new_texts.add(content)
-            except:
+            except StaleElementReferenceException:
+                # Try to re-fetch the tweet element and retry once
+                try:
+                    tweets = driver.find_elements(By.XPATH, '//article[@role="article"]')
+                    tweet = tweets[tweet_index]
+                    tweet.location_once_scrolled_into_view
+                    time.sleep(random.uniform(0.2, 0.5))
+                    meta = extract_tweet_metadata(tweet)
+                    if meta is None:
+                        continue
+                    content = meta["content"]
+                    tweet_id = hash(content)
+                    if tweet_id not in tweet_ids and content:
+                        tweet_data.append({
+                            "username": username,
+                            "follower_count": follower_count,
+                            **meta
+                        })
+                        tweet_ids.add(tweet_id)
+                        new_texts.add(content)
+                    continue
+                except StaleElementReferenceException:
+                    print("Stale element, skipping tweet after retry.")
+                    stale_skipped += 1
+                    continue
+                except Exception as e:
+                    print(f"Error processing tweet after retry: {e}")
+                    error_skipped += 1
+                    continue
+            except Exception as e:
+                print(f"Error processing tweet: {e}")
+                error_skipped += 1
                 continue
+
+        print(f"Skipped {stale_skipped} tweets due to staleness, {error_skipped} due to other errors so far.")
 
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(random.uniform(scroll_pause, scroll_pause + 2))
@@ -167,13 +338,14 @@ def scroll_and_collect(driver, username, max_tweets):
             last_height = new_height
 
     print(f"✅ Final count for @{username}: {len(tweet_data)} tweets")
+    print(f"Total skipped due to staleness: {stale_skipped}, due to other errors: {error_skipped}")
     return tweet_data[:max_tweets]
 
 def handle_exit(signal_received, frame):
     print("\n🔌 Ctrl+C detected. Saving collected tweets before exit...")
     df = pd.DataFrame(tweet_data)
-    df.to_csv(f"tweets_search_query_{USERNAME}.csv", index=False)
-    print(f"💾 Saved {len(df)} tweets to 'tweets_search_query_{USERNAME}.csv'")
+    df.to_csv(f"tweets_user_{USERNAME}.csv", index=False)
+    print(f"💾 Saved {len(df)} tweets to 'tweets_user_{USERNAME}.csv'")
     sys.exit(0)
 
 def main():
@@ -192,8 +364,8 @@ def main():
     scroll_and_collect(driver, USERNAME, MAX_TWEETS)
 
     df = pd.DataFrame(tweet_data)
-    df.to_csv(f"tweets_search_query_{USERNAME}.csv", index=False)
-    print(f"\n✅ Done. Saved {len(df)} tweets to 'tweets_search_query_{USERNAME}.csv'")
+    df.to_csv(f"tweets_user_{USERNAME}.csv", index=False)
+    print(f"\n✅ Done. Saved {len(df)} tweets to 'tweets_user_{USERNAME}.csv'")
     driver.quit()
 
 if __name__ == "__main__":

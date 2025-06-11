@@ -80,7 +80,7 @@ def get_enhanced_embeddings(texts, batch_size=BATCH_SIZE, desc="Generating embed
     with torch.no_grad():
         for i in tqdm(range(0, len(texts), batch_size), total=total_batches, desc=desc):
             batch_texts = texts[i:i+batch_size]
-            encodings = tokenizer(batch_texts.tolist(), padding=True, truncation=True, max_length=128, return_tensors='pt')
+            encodings = tokenizer(batch_texts.tolist(), padding=True, truncation=True, max_length=256, return_tensors='pt')
             input_ids = encodings['input_ids'].to(device)
             attention_mask = encodings['attention_mask'].to(device)
             outputs = model.roberta(input_ids=input_ids, attention_mask=attention_mask)
@@ -141,7 +141,7 @@ base_models = [
         max_depth=4,
         min_samples_split=10,
         min_samples_leaf=4,
-        subsample=0.8,
+        subsample=0.8, # uses only 80% of the data for each tree to prevent overfitting
         random_state=42
     )),
     ('rf', RandomForestRegressor(
@@ -181,7 +181,7 @@ for i, target in enumerate(tqdm(target_columns, desc="Training models")):
     print("This may take several minutes...")
     
     # Add timeout check
-    max_training_time = 1800  # 30 minutes
+    max_training_time = 18000  # 300 minutes (I think)
     training_start = time.time()
     
     try:

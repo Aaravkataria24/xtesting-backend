@@ -1,8 +1,3 @@
-# add automation so that if it begins overfitting (val loss starts increasing), it stops and saves the best model
-# if it already saves best model only, then no need of above step
-
-# make sure there are checkpoints after each epoch
-
 import torch
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
@@ -131,11 +126,11 @@ if features is not None:
     }
 else:
     # Save normalization parameters only for targets
-normalization_params = {
+    normalization_params = {
         'target_means': target_means.tolist(),
         'target_stds': target_stds.tolist(),
         'target_columns': target_columns
-}
+    }
 
 with open('normalization_params.json', 'w') as f:
     json.dump(normalization_params, f)
@@ -271,9 +266,6 @@ def train_model():
 
     # Initialize model and training components
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"CUDA available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"CUDA device: {torch.cuda.get_device_name(0)}")
     print(f"Using device: {device}")
     
     num_features = len(feature_columns) if feature_columns else 0
@@ -325,7 +317,7 @@ def train_model():
                     features_batch = batch["features"].to(device)
                     outputs = model(input_ids=input_ids, attention_mask=attention_mask, features=features_batch)
                 else:
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+                    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
                 
                 loss = loss_fn(outputs, labels)
                 
@@ -360,7 +352,7 @@ def train_model():
                         features_batch = batch["features"].to(device)
                         outputs = model(input_ids=input_ids, attention_mask=attention_mask, features=features_batch)
                     else:
-                    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+                        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
                         
                     loss = loss_fn(outputs, labels)
                     total_val_loss += loss.item()
@@ -461,4 +453,4 @@ def train_model():
         print(f"❌ Error saving final model: {str(e)}")
 
 if __name__ == "__main__":
-    train_model()
+    train_model() 

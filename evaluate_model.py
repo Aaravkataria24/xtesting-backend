@@ -1,250 +1,177 @@
+import torch
 import pandas as pd
 import numpy as np
-import torch
-from transformers import AutoTokenizer, AutoModel
-import joblib
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import json
+import argparse
+from predict import TweetPredictor
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split
-from tqdm import tqdm
-import os
-import gc
+from datetime import datetime
 
-# Constants
-MODEL_NAME = "cardiffnlp/twitter-roberta-base"
-CHECKPOINT_PATH = "finetuned_twitter_roberta_multi.pt"
-REGRESSOR_PATH = "regressor_model.pkl"
-SCALER_PATH = "scaler.pkl"
-TARGET_SCALER_PATH = "target_scaler.pkl"
-CSV_PATH = "processed_tweets_multi.csv"
-
-# Load dataset
-print("📊 Loading dataset...")
-if not os.path.exists(CSV_PATH):
-    raise FileNotFoundError(f"Dataset file not found: {CSV_PATH}")
-df = pd.read_csv(CSV_PATH)
-_, test_df = train_test_split(df, test_size=0.2, random_state=42)
-print(f"Loaded {len(test_df)} test samples")
-
-# Load models and scalers
-print("🤖 Loading models...")
-try:
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    base_model = AutoModel.from_pretrained(MODEL_NAME)
-except Exception as e:
-    raise RuntimeError(f"Failed to load RoBERTa model: {str(e)}")
-
-try:
-    regressor = joblib.load(REGRESSOR_PATH)
-except Exception as e:
-    raise RuntimeError(f"Failed to load regressor model: {str(e)}")
-
-try:
-    scaler = joblib.load(SCALER_PATH)
-except Exception as e:
-    raise RuntimeError(f"Failed to load feature scaler: {str(e)}")
-
-# Custom wrapper for regression head
-import torch.nn as nn
-class RobertaRegressionHead(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.roberta = base_model
-        self.dropout = nn.Dropout(0.2)
-        self.regressor = nn.Linear(self.roberta.config.hidden_size, 3)
-
-    def forward(self, input_ids, attention_mask):
-        outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask)
-        cls_output = outputs.last_hidden_state[:, 0, :]
-        x = self.dropout(cls_output)
-        return self.regressor(x)
-
-# Device setup
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-# Clear GPU memory if available
-if torch.cuda.is_available():
-    torch.cuda.empty_cache()
-    gc.collect()
-
-model = RobertaRegressionHead().to(device)
-
-# Load state dict with strict=False to ignore missing keys
-try:
-    state_dict = torch.load(CHECKPOINT_PATH, map_location=device)
-    model.load_state_dict(state_dict, strict=False)
-    print("✅ Successfully loaded model checkpoint")
-except Exception as e:
-    raise RuntimeError(f"Failed to load model checkpoint: {str(e)}")
-
-model.eval()
-
-# Enhanced embedding generator with progress bar
-def get_enhanced_embeddings(texts, batch_size=16):
-    embeddings = []
-    n_batches = (len(texts) + batch_size - 1) // batch_size
+def load_test_data(test_file):
+    """Load and preprocess test data"""
+    df = pd.read_csv(test_file)
     
-    with torch.no_grad():
-        for i in tqdm(range(0, len(texts), batch_size), total=n_batches, desc="Generating embeddings"):
-            batch_texts = texts[i:i+batch_size]
-            encodings = tokenizer(batch_texts.tolist(), padding=True, truncation=True, max_length=128, return_tensors='pt')
-            input_ids = encodings['input_ids'].to(device)
-            attention_mask = encodings['attention_mask'].to(device)
-            
-            outputs = model.roberta(input_ids=input_ids, attention_mask=attention_mask)
-            
-            # Get [CLS] token embeddings
-            cls_embeddings = outputs.last_hidden_state[:, 0, :]
-            
-            # Get mean and max pooling of all tokens
-            mean_pooling = outputs.last_hidden_state.mean(dim=1)
-            max_pooling = outputs.last_hidden_state.max(dim=1)[0]
-            
-            # Concatenate all features
-            combined_features = torch.cat([
-                cls_embeddings,
-                mean_pooling,
-                max_pooling
-            ], dim=1)
-            
-            embeddings.append(combined_features.cpu().numpy())
-            
-            # Clear memory
-            del outputs, cls_embeddings, mean_pooling, max_pooling, combined_features
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+    # Convert numeric columns to float
+    numeric_cols = ['follower_count', 'view_count', 'length', 'likes', 'retweets', 'replies']
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    return np.concatenate(embeddings, axis=0)
+    # Convert boolean columns to int
+    bool_cols = ['has_image', 'has_video', 'has_link', 'has_mention', 'has_crypto_mention', 'is_quoting', 'has_poll']
+    for col in bool_cols:
+        # Convert various boolean representations to int
+        df[col] = df[col].map(lambda x: 1 if str(x).lower() in ['true', 'yes', '1', 't', 'y'] else 0)
+    
+    # Convert engagement metrics to log scale
+    for col in ['likes', 'retweets', 'replies']:
+        df[f'{col}_log'] = np.log(df[col] + 1)
+    
+    # Convert numeric columns to log scale
+    df['follower_count_log'] = np.log(df['follower_count'] + 1)
+    df['view_count_log'] = np.log(df['view_count'] + 1)
+    df['length_log'] = np.log(df['length'] + 1)
+    
+    # Extract hour and minute from time_posted
+    df[['hour', 'minute']] = df['time_posted'].str.split(':', expand=True).iloc[:, [0, 1]].astype(int)
+    
+    # Rename content column to text if needed
+    if 'content' in df.columns and 'text' not in df.columns:
+        df['text'] = df['content']
+    
+    return df
 
-# Generate embeddings for test set
-print("🔍 Generating embeddings for test set...")
-test_embeddings = get_enhanced_embeddings(test_df["content"])
-test_embeddings_scaled = scaler.transform(test_embeddings)
-
-# Get predictions
-print("📈 Making predictions...")
-test_predictions = np.zeros((len(test_embeddings_scaled), 3))  # Initialize predictions array
-
-# Make predictions for each target
-targets = ['likes_log', 'retweets_log', 'replies_log']
-for i, target in enumerate(targets):
-    print(f"Predicting {target}...")
-    test_predictions[:, i] = regressor[target].predict(test_embeddings_scaled)
-
-test_targets = test_df[["likes_log", "retweets_log", "replies_log"]].values
-
-# Convert log predictions to actual numbers
-test_predictions_actual = np.exp(test_predictions)
-test_targets_actual = np.exp(test_targets)
-
-# Calculate metrics for both log and actual values
-metrics = {}
-for i, target in enumerate(['likes', 'retweets', 'replies']):
-    metrics[target] = {
-        'Log Scale': {
-            'MSE': mean_squared_error(test_targets[:, i], test_predictions[:, i]),
-            'RMSE': np.sqrt(mean_squared_error(test_targets[:, i], test_predictions[:, i])),
-            'MAE': mean_absolute_error(test_targets[:, i], test_predictions[:, i]),
-            'R2': r2_score(test_targets[:, i], test_predictions[:, i])
-        },
-        'Actual Scale': {
-            'MSE': mean_squared_error(test_targets_actual[:, i], test_predictions_actual[:, i]),
-            'RMSE': np.sqrt(mean_squared_error(test_targets_actual[:, i], test_predictions_actual[:, i])),
-            'MAE': mean_absolute_error(test_targets_actual[:, i], test_predictions_actual[:, i]),
-            'R2': r2_score(test_targets_actual[:, i], test_predictions_actual[:, i])
-        }
+def calculate_metrics(y_true, y_pred, target_name):
+    """Calculate various regression metrics"""
+    mae = mean_absolute_error(y_true, y_pred)
+    mse = mean_squared_error(y_true, y_pred)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_true, y_pred)
+    
+    # Calculate percentage within 5% of true value
+    within_5_percent = np.mean(np.abs(y_pred - y_true) / y_true <= 0.05) * 100
+    
+    # Calculate percentage within different error margins
+    within_10_percent = np.mean(np.abs(y_pred - y_true) / y_true <= 0.10) * 100
+    within_20_percent = np.mean(np.abs(y_pred - y_true) / y_true <= 0.20) * 100
+    
+    return {
+        'target': target_name,
+        'MAE': mae,
+        'MSE': mse,
+        'RMSE': rmse,
+        'R2': r2,
+        'Within_5%': within_5_percent,
+        'Within_10%': within_10_percent,
+        'Within_20%': within_20_percent
     }
 
-# Print metrics
-print("\nTest Set Results:")
-print("-" * 50)
-for target, scores in metrics.items():
-    print(f"\n{target.capitalize()}:")
-    print("\nLog Scale Metrics:")
-    for metric, value in scores['Log Scale'].items():
-        print(f"{metric}: {value:.4f}")
-    print("\nActual Scale Metrics:")
-    for metric, value in scores['Actual Scale'].items():
-        print(f"{metric}: {value:.4f}")
+def plot_predictions(y_true, y_pred, target_name, output_dir):
+    """Create scatter plot of predicted vs actual values"""
+    plt.figure(figsize=(10, 6))
+    plt.scatter(y_true, y_pred, alpha=0.5)
+    plt.plot([min(y_true), max(y_true)], [min(y_true), max(y_true)], 'r--')  # Perfect prediction line
+    
+    plt.xlabel('Actual Values')
+    plt.ylabel('Predicted Values')
+    plt.title(f'Predicted vs Actual {target_name}')
+    
+    # Add R² value to plot
+    r2 = r2_score(y_true, y_pred)
+    plt.text(0.05, 0.95, f'R² = {r2:.3f}', transform=plt.gca().transAxes)
+    
+    plt.savefig(f'{output_dir}/{target_name.lower()}_predictions.png')
+    plt.close()
 
-# Create visualizations
-print("\n📊 Creating visualizations...")
-plt.figure(figsize=(20, 10))
+def evaluate_model(test_file, model_path, norm_params_path, output_dir, batch_size=32):
+    """Evaluate model performance on test data"""
+    # Load test data
+    print("Loading test data...")
+    test_data = load_test_data(test_file)
+    
+    # Initialize predictor
+    print("Loading model...")
+    predictor = TweetPredictor(model_path, norm_params_path)
+    
+    # Prepare features DataFrame
+    feature_columns = predictor.norm_params['feature_columns']
+    features_df = test_data[feature_columns].copy()
+    
+    # Make predictions in batches
+    print("Making predictions...")
+    all_predictions = []
+    for i in range(0, len(test_data), batch_size):
+        batch_texts = test_data['text'].iloc[i:i+batch_size].tolist()
+        batch_features = features_df.iloc[i:i+batch_size]
+        
+        batch_predictions = predictor.predict(batch_texts, batch_features)
+        all_predictions.append(batch_predictions)
+    
+    # Combine all predictions
+    predictions_df = pd.concat(all_predictions, ignore_index=True)
+    
+    # Calculate metrics for each target
+    print("\nCalculating metrics...")
+    metrics = []
+    for target in ['likes', 'retweets', 'replies']:
+        target_metrics = calculate_metrics(
+            test_data[target].values,
+            predictions_df[target].values,
+            target
+        )
+        metrics.append(target_metrics)
+        
+        # Create prediction plots
+        plot_predictions(
+            test_data[target].values,
+            predictions_df[target].values,
+            target,
+            output_dir
+        )
+    
+    # Save metrics to file
+    metrics_df = pd.DataFrame(metrics)
+    metrics_df.to_csv(f'{output_dir}/evaluation_metrics.csv', index=False)
+    
+    # Print summary
+    print("\n📊 Evaluation Results 📊")
+    print(metrics_df.to_string(index=False))
+    
+    # Save example predictions
+    print("\nSaving example predictions...")
+    example_df = pd.DataFrame({
+        'text': test_data['text'],
+        'actual_likes': test_data['likes'],
+        'predicted_likes': predictions_df['likes'],
+        'actual_retweets': test_data['retweets'],
+        'predicted_retweets': predictions_df['retweets'],
+        'actual_replies': test_data['replies'],
+        'predicted_replies': predictions_df['replies']
+    })
+    example_df.to_csv(f'{output_dir}/example_predictions.csv', index=False)
 
-# Plot 1: Log Scale Actual vs Predicted
-plt.subplot(2, 3, 1)
-plt.scatter(test_targets[:, 0], test_predictions[:, 0], alpha=0.5)
-plt.plot([test_targets[:, 0].min(), test_targets[:, 0].max()], 
-         [test_targets[:, 0].min(), test_targets[:, 0].max()], 'r--')
-plt.xlabel('Actual Likes (log)')
-plt.ylabel('Predicted Likes (log)')
-plt.title('Likes: Log Scale Actual vs Predicted')
+def main():
+    parser = argparse.ArgumentParser(description='Evaluate tweet engagement prediction model')
+    parser.add_argument('test_file', help='Path to test data CSV file')
+    parser.add_argument('--model_path', default='checkpoints/best_model.pt', help='Path to trained model')
+    parser.add_argument('--norm_params_path', default='normalization_params.json', help='Path to normalization parameters')
+    parser.add_argument('--output_dir', default='evaluation_results', help='Directory to save evaluation results')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for predictions')
+    
+    args = parser.parse_args()
+    
+    # Create output directory if it doesn't exist
+    import os
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Run evaluation
+    evaluate_model(
+        args.test_file,
+        args.model_path,
+        args.norm_params_path,
+        args.output_dir,
+        args.batch_size
+    )
 
-# Plot 2: Actual Scale Actual vs Predicted
-plt.subplot(2, 3, 2)
-plt.scatter(test_targets_actual[:, 0], test_predictions_actual[:, 0], alpha=0.5)
-plt.plot([test_targets_actual[:, 0].min(), test_targets_actual[:, 0].max()], 
-         [test_targets_actual[:, 0].min(), test_targets_actual[:, 0].max()], 'r--')
-plt.xlabel('Actual Likes')
-plt.ylabel('Predicted Likes')
-plt.title('Likes: Actual Scale')
-
-# Plot 3: Error Distribution
-plt.subplot(2, 3, 3)
-errors = test_predictions[:, 0] - test_targets[:, 0]
-sns.histplot(errors, kde=True)
-plt.xlabel('Prediction Error (log scale)')
-plt.title('Likes: Error Distribution')
-
-# Plot 4: Retweets Log Scale
-plt.subplot(2, 3, 4)
-plt.scatter(test_targets[:, 1], test_predictions[:, 1], alpha=0.5)
-plt.plot([test_targets[:, 1].min(), test_targets[:, 1].max()], 
-         [test_targets[:, 1].min(), test_targets[:, 1].max()], 'r--')
-plt.xlabel('Actual Retweets (log)')
-plt.ylabel('Predicted Retweets (log)')
-plt.title('Retweets: Log Scale')
-
-# Plot 5: Retweets Actual Scale
-plt.subplot(2, 3, 5)
-plt.scatter(test_targets_actual[:, 1], test_predictions_actual[:, 1], alpha=0.5)
-plt.plot([test_targets_actual[:, 1].min(), test_targets_actual[:, 1].max()], 
-         [test_targets_actual[:, 1].min(), test_targets_actual[:, 1].max()], 'r--')
-plt.xlabel('Actual Retweets')
-plt.ylabel('Predicted Retweets')
-plt.title('Retweets: Actual Scale')
-
-# Plot 6: Replies Log Scale
-plt.subplot(2, 3, 6)
-plt.scatter(test_targets[:, 2], test_predictions[:, 2], alpha=0.5)
-plt.plot([test_targets[:, 2].min(), test_targets[:, 2].max()], 
-         [test_targets[:, 2].min(), test_targets[:, 2].max()], 'r--')
-plt.xlabel('Actual Replies (log)')
-plt.ylabel('Predicted Replies (log)')
-plt.title('Replies: Log Scale')
-
-plt.tight_layout()
-plt.savefig('model_evaluation.png')
-print("✅ Saved evaluation plots to 'model_evaluation.png'")
-
-# Save detailed results
-results = {
-    'metrics': metrics,
-    'predictions_log': test_predictions.tolist(),
-    'predictions_actual': test_predictions_actual.tolist(),
-    'actual_log': test_targets.tolist(),
-    'actual_actual': test_targets_actual.tolist()
-}
-
-import json
-with open('evaluation_results.json', 'w') as f:
-    json.dump(results, f, indent=2)
-print("✅ Saved detailed results to 'evaluation_results.json'")
-
-# Clear memory
-del model, base_model, tokenizer, regressor, scaler
-if torch.cuda.is_available():
-    torch.cuda.empty_cache()
-gc.collect()
+if __name__ == "__main__":
+    main() 

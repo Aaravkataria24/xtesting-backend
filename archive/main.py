@@ -20,6 +20,7 @@ BASE_MODEL = "cardiffnlp/twitter-roberta-base"
 class MultiTargetScaler:
     def __init__(self):
         # These means and stds are for log1p-transformed values
+        # Manually hardcoded to avoid loading the scaler from the training data
         self.means = np.array([2.0, 1.0, 0.5])  # Means for log1p(likes), log1p(retweets), log1p(replies)
         self.stds = np.array([1.5, 1.0, 0.8])   # Standard deviations for log-transformed values
         
@@ -54,7 +55,7 @@ try:
 except Exception as e:
     raise RuntimeError(f"Failed to load RoBERTa model: {str(e)}")
 
-# Custom wrapper for regression head
+# Custom wrapper for regression head - essentially just a linear layer
 class RobertaRegressionHead(torch.nn.Module):
     def __init__(self):
         super().__init__()
