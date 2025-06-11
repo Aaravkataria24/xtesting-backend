@@ -22,7 +22,7 @@ class EnhancedRobertaRegressor(nn.Module):
         # Feature processing if we have additional features
         if num_features > 0:
             self.feature_encoder = nn.Sequential(
-                nn.Linear(num_features, 64),
+                nn.Linear(11, 64),  # Changed from num_features to 11
                 nn.LayerNorm(64),
                 nn.GELU(),
                 nn.Dropout(dropout_rate),
@@ -84,11 +84,12 @@ class TweetPredictor:
         
         # Determine if we have features
         self.has_features = 'feature_columns' in self.norm_params
-        self.num_features = len(self.norm_params.get('feature_columns', [])) if self.has_features else 0
+        # Update number of features to 11 (excluding view_count_log)
+        self.num_features = 11 if self.has_features else 0
         
         # List feature columns for reference
         if self.has_features:
-            print(f"Feature columns: {self.norm_params['feature_columns']}")
+            print(f"Feature columns (excluding view_count_log): {[col for col in self.norm_params['feature_columns'] if col != 'view_count_log']}")
         
         # Set device
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -96,7 +97,7 @@ class TweetPredictor:
         
         # Initialize tokenizer and model
         self.tokenizer = AutoTokenizer.from_pretrained("cardiffnlp/twitter-roberta-base")
-        self.model = EnhancedRobertaRegressor(num_features=self.num_features).to(self.device)
+        self.model = EnhancedRobertaRegressor(num_features=11).to(self.device)  # Always use 11 features
         
         # Load model weights
         checkpoint = torch.load(model_path, map_location=self.device)
@@ -121,9 +122,12 @@ class TweetPredictor:
         if not self.has_features:
             return None
             
-        feature_columns = self.norm_params['feature_columns']
-        feature_means = self.norm_params['feature_means']
-        feature_stds = self.norm_params['feature_stds']
+        # Filter out view_count_log from feature columns if it exists
+        feature_columns = [col for col in self.norm_params['feature_columns'] if col != 'view_count_log']
+        feature_means = [mean for i, mean in enumerate(self.norm_params['feature_means']) 
+                        if self.norm_params['feature_columns'][i] != 'view_count_log']
+        feature_stds = [std for i, std in enumerate(self.norm_params['feature_stds']) 
+                       if self.norm_params['feature_columns'][i] != 'view_count_log']
         
         # Fix potential issues with zero standard deviation
         feature_stds = [std if std != 0 else 1.0 for std in feature_stds]

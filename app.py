@@ -61,37 +61,65 @@ class TweetRequest(BaseModel):
     is_quoting: bool = False
     has_poll: bool = False
     time_posted: str
-    follower_count: int
-    view_count: Optional[int] = None
+    follower_count: Optional[int] = None
     length: Optional[int] = None
 
 @app.post("/predict")
-async def predict_engagement(request: TweetRequest) -> Dict[str, Any]:
+async def predict_engagement(request: Request, body: TweetRequest) -> Dict[str, Any]:
+    # Log incoming request payload (omitting follower_count) for debugging
+    import json
+    debug_payload = {k: v for k, v in body.dict().items() if k != "follower_count"}
+    print("Debug (Backend /predict): Incoming request payload (without follower_count):", json.dumps(debug_payload, default=str))
     try:
-        # Create features dictionary with log transformations
+        print("Debug: Starting prediction process...")
+        follower_count = body.follower_count
+        print("Debug: Initial follower_count from request:", follower_count)
+        
+        if follower_count is None:
+            print("Debug: No follower_count in request, checking user session...")
+            user = None
+            if "x_user" in request.cookies:
+                print("Debug: Found x_user in cookies")
+                user = json.loads(request.cookies["x_user"])
+            elif "x_user" in request.headers:
+                print("Debug: Found x_user in headers")
+                user = json.loads(request.headers["x_user"])
+            else:
+                print("Debug: No x_user found in cookies or headers")
+                print("Debug: Available cookies:", request.cookies)
+                print("Debug: Available headers:", dict(request.headers))
+            
+            if user and "followerCount" in user:
+                follower_count = user["followerCount"]
+                print("Debug: Got follower_count from user session:", follower_count)
+            else:
+                print("Debug: No followerCount found in user data:", user)
+                raise HTTPException(status_code=400, detail="Follower count not provided and not found in user profile.")
+        
+        print("Debug: Using follower_count:", follower_count)
+        
+        # Create features dictionary (with log transformations) and proceed as before
         features = {
-            "has_image": int(request.has_image),
-            "has_video": int(request.has_video),
-            "has_link": int(request.has_link),
-            "has_mention": int(request.has_mention),
-            "has_crypto_mention": int(request.has_crypto_mention),
-            "is_quoting": int(request.is_quoting),
-            "has_poll": int(request.has_poll),
-            "time_posted": request.time_posted,
-            "follower_count": request.follower_count,
-            "view_count": request.view_count if request.view_count is not None else 0,
-            "length": request.length if request.length is not None else len(request.text),
-            # Add log-transformed features
-            "follower_count_log": np.log(request.follower_count + 1),
-            "view_count_log": np.log((request.view_count if request.view_count is not None else 0) + 1),
-            "length_log": np.log((request.length if request.length is not None else len(request.text)) + 1)
+            "has_image": int(body.has_image),
+            "has_video": int(body.has_video),
+            "has_link": int(body.has_link),
+            "has_mention": int(body.has_mention),
+            "has_crypto_mention": int(body.has_crypto_mention),
+            "is_quoting": int(body.is_quoting),
+            "has_poll": int(body.has_poll),
+            "time_posted": body.time_posted,
+            "follower_count": follower_count,
+            "length": body.length if body.length is not None else len(body.text),
+            "follower_count_log": np.log(follower_count + 1),
+            "length_log": np.log((body.length if body.length is not None else len(body.text)) + 1)
         }
+        print("Debug: Created features dictionary:", json.dumps(features, default=str))
         
-        # Convert to DataFrame
         features_df = pd.DataFrame([features])
+        print("Debug: Created DataFrame")
         
-        # Get predictions
-        predictions = predictor.predict([request.text], features_df)
+        predictions = predictor.predict([body.text], features_df)
+        print("Debug: Got predictions:", predictions)
         
         return {
             "likes": int(predictions["likes"][0]),
@@ -99,6 +127,9 @@ async def predict_engagement(request: TweetRequest) -> Dict[str, Any]:
             "replies": int(predictions["replies"][0])
         }
     except Exception as e:
+        print("Debug: Error in predict_engagement:", str(e))
+        import traceback
+        print("Debug: Full traceback:", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/x/callback")
