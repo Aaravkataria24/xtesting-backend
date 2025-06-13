@@ -111,7 +111,9 @@ async def predict_engagement(request: Request, body: TweetRequest) -> Dict[str, 
             "follower_count": follower_count,
             "length": body.length if body.length is not None else len(body.text),
             "follower_count_log": np.log(follower_count + 1),
-            "length_log": np.log((body.length if body.length is not None else len(body.text)) + 1)
+            "length_log": np.log((body.length if body.length is not None else len(body.text)) + 1),
+            "hour": 12,
+            "minute": 0
         }
         print("Debug: Created features dictionary:", json.dumps(features, default=str))
         

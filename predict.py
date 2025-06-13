@@ -146,16 +146,24 @@ class TweetPredictor:
             print(f"Could not parse time: {time_str}. Using default values. Error: {str(e)}")
             return 12, 0  # Default to noon
     
-    def denormalize_predictions(self, predictions):
-        """Convert normalized predictions back to original scale"""
+    def denormalize_predictions(self, predictions, features_df):
+        """Convert normalized predictions back to original scale, using follower_count_log"""
         target_means = self.norm_params['target_means']
         target_stds = self.norm_params['target_stds']
         target_columns = self.norm_params['target_columns']
-        
+
+        # Get follower_count_log from features_df
+        follower_count_log = features_df['follower_count_log'].values.reshape(-1, 1)  # shape (batch, 1)
+
         denormalized = {}
         for i, col in enumerate(target_columns):
-            denormalized[col.replace('_log', '')] = np.exp(predictions[:, i] * target_stds[i] + target_means[i]) - 1
-            
+            # Undo normalization
+            pred_log_norm = predictions[:, i] * target_stds[i] + target_means[i]
+            # Multiply by follower_count_log to get back to log scale
+            pred_log = pred_log_norm * follower_count_log[:, 0]
+            # De-log
+            denormalized[col.replace('_log_norm', '')] = np.exp(pred_log) - 1
+
         return denormalized
     
     def predict(self, texts, features_df=None):
@@ -178,7 +186,7 @@ class TweetPredictor:
             predictions = outputs.cpu().numpy()
         
         # Denormalize predictions
-        results = self.denormalize_predictions(predictions)
+        results = self.denormalize_predictions(predictions, features_df)
         
         # Add texts to results
         results['text'] = texts

@@ -81,23 +81,23 @@ if 'time_posted' in df.columns:
         df['hour'] = 0
         df['minute'] = 0
 
-# Explicitly set feature columns (strictly ignore view_count_log, is_quoting, has_poll)
+# Create normalized log targets
+# likes_log_norm = likes_log / follower_count_log, etc.
+df['likes_log_norm'] = df['likes_log'] / df['follower_count_log']
+df['retweets_log_norm'] = df['retweets_log'] / df['follower_count_log']
+df['replies_log_norm'] = df['replies_log'] / df['follower_count_log']
+
+# Set new target columns
 feature_columns = [
     'follower_count_log', 'length_log', 'has_image', 'has_video',
     'has_link', 'has_mention', 'has_crypto_mention', 'hour', 'minute'
 ]
+target_columns = ['likes_log_norm', 'retweets_log_norm', 'replies_log_norm']
 
-print(f"Text column: {text_column}")
-print(f"Target columns: {target_columns}")
-print(f"Feature columns: {feature_columns}")
-
-# Print sample data to verify structure
-print("\nSample data row:")
-print(df.iloc[0][feature_columns].to_dict())
-
+# Prepare features and targets
 texts = df[text_column].tolist()
-targets = df[target_columns].values
 features = df[feature_columns].values if feature_columns else None
+targets = df[target_columns].values
 
 # Calculate mean and std for normalization of targets
 target_means = np.mean(targets, axis=0)
@@ -111,7 +111,7 @@ if features is not None:
     # Handle zero standard deviation (constant features)
     feature_stds = np.where(feature_stds == 0, 1.0, feature_stds)
     normalized_features = (features - feature_means) / feature_stds
-
+    
     # Save normalization parameters for both targets and features
     normalization_params = {
         'target_means': target_means.tolist(),
@@ -123,11 +123,11 @@ if features is not None:
     }
 else:
     # Save normalization parameters only for targets
-    normalization_params = {
+normalization_params = {
         'target_means': target_means.tolist(),
         'target_stds': target_stds.tolist(),
         'target_columns': target_columns
-    }
+}
 
 with open('normalization_params.json', 'w') as f:
     json.dump(normalization_params, f)
@@ -148,7 +148,7 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 # Enhanced Dataset class with numeric features
 class TweetDataset(Dataset):
     def __init__(self, texts, targets, tokenizer, max_length, features=None):
-        self.encodings = tokenizer(texts, padding=True, truncation=True,
+        self.encodings = tokenizer(texts, padding=True, truncation=True, 
                                  max_length=max_length, return_tensors="pt")
         self.targets = torch.tensor(targets, dtype=torch.float32)
         self.features = torch.tensor(features, dtype=torch.float32) if features is not None else None
@@ -170,10 +170,10 @@ class EnhancedRobertaRegressor(nn.Module):
         self.roberta = AutoModel.from_pretrained(MODEL_NAME)
         hidden_size = self.roberta.config.hidden_size  # This is 768 for RoBERTa base
         self.num_features = num_features
-
+        
         # Feature extraction layers
         self.attention = nn.MultiheadAttention(hidden_size, num_heads=8, dropout=dropout_rate)
-
+        
         # Feature processing if we have additional features
         if num_features > 0:
             self.feature_encoder = nn.Sequential(
@@ -186,47 +186,47 @@ class EnhancedRobertaRegressor(nn.Module):
                 nn.GELU(),
                 nn.Dropout(dropout_rate)
             )
-
+            
             # Combined processing of text and numeric features
             self.combined_layer = nn.Linear(hidden_size + 128, hidden_size)
-
+        
         # Multiple dense layers with residual connections
         self.dense1 = nn.Linear(hidden_size, hidden_size)
         self.dense2 = nn.Linear(hidden_size, hidden_size)
         self.dense3 = nn.Linear(hidden_size, hidden_size // 2)
         self.dense4 = nn.Linear(hidden_size // 2, 3)  # Direct output to 3 targets
-
+        
         # Dropout and normalization
         self.dropout = nn.Dropout(dropout_rate)
         self.layer_norm1 = nn.LayerNorm(hidden_size)
         self.layer_norm2 = nn.LayerNorm(hidden_size)
-
+        
     def forward(self, input_ids, attention_mask, features=None):
         # Get RoBERTa embeddings
         outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask)
         sequence_output = outputs.last_hidden_state
-
+        
         # Apply self-attention
         attention_output, _ = self.attention(sequence_output, sequence_output, sequence_output)
         pooled_output = attention_output.mean(dim=1)  # [batch_size, hidden_size]
-
+        
         # Incorporate numeric features if available
         if features is not None and self.num_features > 0:
             feature_encoding = self.feature_encoder(features)
             combined_output = torch.cat([pooled_output, feature_encoding], dim=1)
             pooled_output = self.combined_layer(combined_output)
-
+        
         # Dense layers with residual connections and layer normalization
         x = self.layer_norm1(pooled_output)
         x = self.dropout(F.gelu(self.dense1(x))) + pooled_output  # Residual connection
-
+        
         x = self.layer_norm2(x)
         x = self.dropout(F.gelu(self.dense2(x))) + x  # Residual connection
-
+        
         # Final layers without residual connections
         x = self.dropout(F.gelu(self.dense3(x)))
         x = self.dense4(x)
-
+        
         return x
 
 # Custom loss function combining MSE and Huber loss
@@ -235,7 +235,7 @@ class CombinedLoss(nn.Module):
         super().__init__()
         self.mse = nn.MSELoss()
         self.huber = nn.HuberLoss(delta=delta)
-
+        
     def forward(self, pred, target):
         return 0.7 * self.mse(pred, target) + 0.3 * self.huber(pred, target)
 
@@ -245,7 +245,7 @@ def train_model():
     train_texts, val_texts, train_targets, val_targets = train_test_split(
         texts, normalized_targets, test_size=0.1, random_state=42
     )
-
+    
     # If we have features, split them too
     if features is not None:
         train_features, val_features = train_test_split(
@@ -264,13 +264,13 @@ def train_model():
     # Initialize model and training components
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-
+    
     num_features = len(feature_columns) if feature_columns else 0
     model = EnhancedRobertaRegressor(num_features=num_features).to(device)
-
+    
     # Optimizer with weight decay
     optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
-
+    
     # Learning rate scheduler with warmup
     total_steps = len(train_loader) * EPOCHS
     scheduler = get_linear_schedule_with_warmup(
@@ -278,16 +278,16 @@ def train_model():
         num_warmup_steps=WARMUP_STEPS,
         num_training_steps=total_steps
     )
-
+    
     loss_fn = CombinedLoss()
-
+    
     # Training state
     best_val_loss = float('inf')
     patience_counter = 0
-
+    
     # Clean up any existing checkpoints at the start
     cleanup_old_checkpoints()
-
+    
     # Training loop
     try:
         for epoch in range(EPOCHS):
@@ -297,85 +297,85 @@ def train_model():
 
             model.train()
             total_train_loss = 0
-
+            
             # Training phase
             for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Train]")):
                 if should_stop_training:
                     break
 
                 optimizer.zero_grad()
-
+                
                 input_ids = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
                 labels = batch["labels"].to(device)
-
+                
                 # Forward pass - handle features if available
                 if "features" in batch:
                     features_batch = batch["features"].to(device)
                     outputs = model(input_ids=input_ids, attention_mask=attention_mask, features=features_batch)
                 else:
-                    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+                
                 loss = loss_fn(outputs, labels)
-
+                
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
                 optimizer.step()
                 scheduler.step()
-
+                
                 total_train_loss += loss.item()
-
+                
                 # Clear memory
                 del outputs, loss
                 torch.cuda.empty_cache()
                 gc.collect()
-
+            
             avg_train_loss = total_train_loss / len(train_loader)
-
+            
             # Validation phase
             model.eval()
             total_val_loss = 0
             all_preds = []
             all_labels = []
-
+            
             with torch.no_grad():
                 for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Val]"):
                     input_ids = batch["input_ids"].to(device)
                     attention_mask = batch["attention_mask"].to(device)
                     labels = batch["labels"].to(device)
-
+                    
                     # Forward pass - handle features if available
                     if "features" in batch:
                         features_batch = batch["features"].to(device)
                         outputs = model(input_ids=input_ids, attention_mask=attention_mask, features=features_batch)
                     else:
-                        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-
+                    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+                        
                     loss = loss_fn(outputs, labels)
                     total_val_loss += loss.item()
-
+                    
                     # Store predictions and labels for metrics
                     all_preds.extend(outputs.cpu().numpy())
                     all_labels.extend(labels.cpu().numpy())
-
+                    
                     del outputs, loss
                     torch.cuda.empty_cache()
                     gc.collect()
-
+            
             avg_val_loss = total_val_loss / len(val_loader)
-
+            
             # Calculate percentage within 5% error
             pred_array = np.array(all_preds)
             label_array = np.array(all_labels)
-
+            
             # Denormalize predictions and labels
             pred_denorm = pred_array * target_stds + target_means
             label_denorm = label_array * target_stds + target_means
-
+            
             # Calculate percentage error
             percent_error = np.abs((pred_denorm - label_denorm) / label_denorm) * 100
             within_5_percent = np.mean(percent_error <= 5.0) * 100
-
+            
             # Log metrics
             log_entry = {
                 'epoch': epoch + 1,
@@ -384,22 +384,22 @@ def train_model():
                 'within_5_percent': within_5_percent,
                 'timestamp': datetime.now().isoformat()
             }
-
+            
             try:
                 with open(os.path.join(LOG_PATH, "training_log.json"), "a") as f:
                     f.write(json.dumps(log_entry) + "\n")
                 print("✅ Successfully logged metrics")
             except Exception as e:
                 print(f"❌ Error logging metrics: {str(e)}")
-
+            
             print(f"Epoch {epoch+1}/{EPOCHS}")
             print(f"Train Loss: {avg_train_loss:.4f}")
             print(f"Val Loss: {avg_val_loss:.4f}")
             print(f"Within 5% error: {within_5_percent:.2f}%")
-
+            
             # Clean up old checkpoints before saving new ones
             cleanup_old_checkpoints()
-
+            
             # Save checkpoint after each epoch
             save_checkpoint({
                 'epoch': epoch,
@@ -409,7 +409,7 @@ def train_model():
                 'loss': avg_val_loss,
                 'within_5_percent': within_5_percent
             }, f"epoch_{epoch+1}_checkpoint.pt")
-
+            
             # Model checkpointing
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
@@ -425,11 +425,11 @@ def train_model():
             else:
                 patience_counter += 1
                 print(f"⚠️ No improvement for {patience_counter} epochs")
-
+            
             if patience_counter >= PATIENCE:
                 print("🛑 Early stopping triggered!")
                 break
-
+            
             torch.cuda.empty_cache()
             gc.collect()
 
