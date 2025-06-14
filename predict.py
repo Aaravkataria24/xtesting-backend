@@ -154,7 +154,7 @@ class TweetPredictor:
 
         # Get follower_count_log from features_df
         follower_count_log = features_df['follower_count_log'].values.reshape(-1, 1)  # shape (batch, 1)
-
+        
         denormalized = {}
         for i, col in enumerate(target_columns):
             # Undo normalization
@@ -163,7 +163,11 @@ class TweetPredictor:
             pred_log = pred_log_norm * follower_count_log[:, 0]
             # De-log
             denormalized[col.replace('_log_norm', '')] = np.exp(pred_log) - 1
-
+        # Fallback: if any target column (e.g. "likes_log_norm") is missing (e.g. if predictions is empty or does not match target_columns), assign a default (0) for the denormalized key (e.g. "likes").
+        for col in target_columns:
+            denormalized_key = col.replace('_log_norm', '')
+            if denormalized_key not in denormalized:
+                 denormalized[denormalized_key] = 0
         return denormalized
     
     def predict(self, texts, features_df=None):

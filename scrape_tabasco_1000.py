@@ -15,8 +15,8 @@ from selenium.common.exceptions import StaleElementReferenceException
 
 # Search Queries = ["chain%20abstraction", "interop", "rollup", "solana", "trenches", "multi-chain", "dApp", "onchain", "web3", "defi", "nft", "gamefi", "socialfi", "dao", "wallet", "staking", "bridging", "L2"]
 
-USERNAME = "davidonchainx"
-MAX_TWEETS = 10000
+USERNAME = "HeetTike"
+MAX_TWEETS = 300
 default_follower_count = 9701  # Set this to the user's follower count before running
 tweet_data = []  # Global list to store tweets for interrupt handler
 
